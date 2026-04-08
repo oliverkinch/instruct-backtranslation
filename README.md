@@ -18,16 +18,19 @@ Edit `.env` with your API credentials. The pipeline uses an OpenAI-compatible AP
 
 ## Usage
 
-The pipeline has three stages:
+The pipeline has four stages:
 
 ```bash
-# Stage 1: Extract and filter paragraphs
+# Stage 1: Heuristic extraction — split articles into sections, filter junk
 uv run instruct-bt extract
 
-# Stage 2: Generate instructions for each paragraph
+# Stage 2: LLM selection — pick the best chatbot-response passage from each section
+uv run instruct-bt select
+
+# Stage 3: Generate instructions for each selected paragraph
 uv run instruct-bt generate
 
-# Stage 3: Deduplicate, filter, and format
+# Stage 4: Deduplicate, filter, and format
 uv run instruct-bt postprocess
 
 # Or run everything end-to-end
@@ -46,7 +49,8 @@ uv run instruct-bt run-all -d output/wiki
 # Adjust paragraph length bounds (chars)
 uv run instruct-bt extract --min-chars 150 --max-chars 2000
 
-# Set LLM temperature
+# Set LLM temperature (selection uses low temp by default)
+uv run instruct-bt select -t 0.3
 uv run instruct-bt generate -t 0.7
 ```
 
@@ -85,6 +89,7 @@ The final dataset is written to `data/final.parquet` (and `data/final.jsonl`) in
 
 ## Pipeline overview
 
-1. **Extract** — Loads a HuggingFace dataset, splits articles into sections, filters for self-contained informative paragraphs (rejects stubs, link lists, track listings, reference sections, etc.)
-2. **Generate** — For each paragraph, calls an LLM to generate the instruction a user would have sent to receive this paragraph as a response. Async with concurrency control and resume support.
-3. **Postprocess** — Filters refusals, runs MinHash deduplication on both instructions and paragraphs, formats to chat messages.
+1. **Extract** — Loads a HuggingFace dataset, splits articles into sections, filters out stubs, link lists, track listings, reference sections, etc.
+2. **Select** — For each candidate section, an LLM selects the best self-contained passage that reads naturally as a chatbot response. A verification step ensures the output is a verbatim extract (not a paraphrase).
+3. **Generate** — For each selected passage, an LLM generates a short, natural instruction a user would have typed to receive it. Few-shot examples guide the LLM toward casual, realistic queries.
+4. **Postprocess** — Filters refusals, runs MinHash deduplication on both instructions and paragraphs, formats to chat messages.

@@ -10,6 +10,7 @@ from instruct_bt.config import load_settings
 from instruct_bt.extract import extract_paragraphs
 from instruct_bt.generate import generate_instructions
 from instruct_bt.postprocess import postprocess
+from instruct_bt.select import select_paragraphs
 
 
 @click.group()
@@ -59,9 +60,18 @@ def extract(
 
 @cli.command()
 @click.option("-d", "--data-dir", default="data", show_default=True, help="Directory for intermediate and output files.")
+@click.option("-t", "--temperature", default=0.3, show_default=True, help="LLM sampling temperature.")
+def select(data_dir: str, temperature: float) -> None:
+    """Stage 2: LLM-based selection of best chatbot-response passages."""
+    settings = load_settings(data_dir=data_dir, temperature=temperature)
+    asyncio.run(select_paragraphs(settings))
+
+
+@cli.command()
+@click.option("-d", "--data-dir", default="data", show_default=True, help="Directory for intermediate and output files.")
 @click.option("-t", "--temperature", default=1.0, show_default=True, help="LLM sampling temperature.")
 def generate(data_dir: str, temperature: float) -> None:
-    """Stage 2: Generate instructions for each extracted paragraph."""
+    """Stage 3: Generate instructions for each selected paragraph."""
     settings = load_settings(data_dir=data_dir, temperature=temperature)
     asyncio.run(generate_instructions(settings))
 
@@ -69,7 +79,7 @@ def generate(data_dir: str, temperature: float) -> None:
 @cli.command(name="postprocess")
 @click.option("-d", "--data-dir", default="data", show_default=True, help="Directory for intermediate and output files.")
 def postprocess_cmd(data_dir: str) -> None:
-    """Stage 3: Filter, deduplicate, and format the final dataset."""
+    """Stage 4: Filter, deduplicate, and format the final dataset."""
     settings = load_settings(data_dir=data_dir)
     postprocess(settings)
 
@@ -81,7 +91,8 @@ def postprocess_cmd(data_dir: str) -> None:
 @click.option("--url-column", default="url", show_default=True, help="Column containing source URL (empty to skip).")
 @click.option("-n", "--n-samples", default=0, show_default=True, help="Max paragraphs to extract (0 = all).")
 @click.option("-d", "--data-dir", default="data", show_default=True, help="Directory for intermediate and output files.")
-@click.option("-t", "--temperature", default=1.0, show_default=True, help="LLM sampling temperature.")
+@click.option("-t", "--temperature", default=1.0, show_default=True, help="LLM sampling temperature for instruction generation.")
+@click.option("--select-temperature", default=0.3, show_default=True, help="LLM sampling temperature for paragraph selection.")
 @click.option("--seed", default=42, show_default=True, help="Random seed.")
 @click.option("--min-chars", default=100, show_default=True, help="Minimum paragraph length in characters.")
 @click.option("--max-chars", default=3000, show_default=True, help="Maximum paragraph length in characters.")
@@ -94,15 +105,15 @@ def run_all(
     n_samples: int,
     data_dir: str,
     temperature: float,
+    select_temperature: float,
     seed: int,
     min_chars: int,
     max_chars: int,
     streaming: bool,
 ) -> None:
     """Run the full pipeline end-to-end."""
-    settings = load_settings(data_dir=data_dir, temperature=temperature)
-
     click.echo("=== Stage 1: Extract paragraphs ===")
+    settings = load_settings(data_dir=data_dir, temperature=temperature)
     output_path = settings.data_dir / "paragraphs.jsonl"
     extract_paragraphs(
         output_path=output_path,
@@ -117,10 +128,14 @@ def run_all(
         streaming=streaming,
     )
 
-    click.echo("\n=== Stage 2: Generate instructions ===")
+    click.echo("\n=== Stage 2: Select passages (LLM) ===")
+    select_settings = load_settings(data_dir=data_dir, temperature=select_temperature)
+    asyncio.run(select_paragraphs(select_settings))
+
+    click.echo("\n=== Stage 3: Generate instructions ===")
     asyncio.run(generate_instructions(settings))
 
-    click.echo("\n=== Stage 3: Post-process ===")
+    click.echo("\n=== Stage 4: Post-process ===")
     postprocess(settings)
 
     click.echo(f"\nDone! Final dataset at {settings.data_dir / 'final.parquet'}")

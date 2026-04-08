@@ -95,15 +95,15 @@ def _looks_danish(text: str) -> bool:
 
 
 async def generate_instructions(settings: Settings) -> Path:
-    """For each extracted paragraph, generate the instruction that would produce it.
+    """For each selected paragraph, generate the instruction that would produce it.
 
-    Reads from ``{data_dir}/paragraphs.jsonl``, writes to
+    Reads from ``{data_dir}/selected.jsonl``, writes to
     ``{data_dir}/with_instructions.jsonl``.
 
     Supports resumption: already-processed paragraphs (matched by text)
     are skipped.
     """
-    src = settings.data_dir / "paragraphs.jsonl"
+    src = settings.data_dir / "selected.jsonl"
     dst = settings.data_dir / "with_instructions.jsonl"
 
     docs = _read_jsonl(src)
@@ -126,15 +126,13 @@ async def generate_instructions(settings: Settings) -> Path:
     sem = asyncio.Semaphore(settings.max_concurrency)
 
     async def _process(doc: dict) -> dict | None:
-        len_limit = random.choice([30, 50, 75, 100])
-        prompt = INSTRUCTION_TEMPLATE.format(
-            paragraph=doc["paragraph"],
-            len_limit=len_limit,
-        )
+        prompt = INSTRUCTION_TEMPLATE.format(paragraph=doc["paragraph"])
         instruction = await _call_api(client, sem, prompt, settings)
 
         if not instruction:
             return None
+
+        instruction = instruction.strip()
 
         if not _looks_danish(instruction):
             print(f"  [lang-check] Skipping non-Danish instruction: {instruction[:80]}...")

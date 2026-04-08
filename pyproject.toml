@@ -1,0 +1,27 @@
+[project]
+name = "instruct-bt"
+version = "0.1.0"
+description = "Danish instruction backtranslation: extract non-synthetic paragraphs and generate matching prompts"
+readme = "README.md"
+authors = [
+    { name = "Oliver Kinch", email = "oliver.kinch@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "openai>=1.57",
+    "datasets>=3.0",
+    "datasketch>=1.6",
+    "transformers>=4.42",
+    "pyarrow>=16.0",
+    "pandas>=2.0",
+    "tqdm>=4.0",
+    "python-dotenv>=1.0",
+    "click>=8.0",
+]
+
+[project.scripts]
+instruct-bt = "instruct_bt.pipeline:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

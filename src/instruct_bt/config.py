@@ -11,6 +11,8 @@ from dotenv import load_dotenv
 
 @dataclass
 class Settings:
+    """Pipeline configuration loaded from environment variables and CLI flags."""
+
     api_key: str
     base_url: str
     model_name: str

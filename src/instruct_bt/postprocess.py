@@ -57,15 +57,13 @@ def _filter_refusals(docs: list[dict]) -> list[dict]:
 
 def _minhash_dedup(
     docs: list[dict],
-    tokenizer_name: str,
+    tokenizer: AutoTokenizer,
     *,
     key: str = "instruction",
     threshold: float = 0.7,
     num_perm: int = 128,
 ) -> list[dict]:
     """Remove near-duplicate documents based on MinHash of the given key's tokens."""
-    print(f"Loading tokenizer {tokenizer_name} for MinHash dedup ...")
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
 
     lsh = MinHashLSH(threshold=threshold, num_perm=num_perm)
     minhashes: dict[int, MinHash] = {}
@@ -142,10 +140,14 @@ def postprocess(settings: Settings) -> Path:
     # Filter refusals
     docs = _filter_refusals(docs)
 
+    # Load tokenizer once for both dedup passes
+    print(f"Loading tokenizer {settings.minhash_tokenizer} for MinHash dedup ...")
+    tokenizer = AutoTokenizer.from_pretrained(settings.minhash_tokenizer)
+
     # MinHash dedup on instructions
     docs = _minhash_dedup(
         docs,
-        tokenizer_name=settings.minhash_tokenizer,
+        tokenizer=tokenizer,
         key="instruction",
         threshold=settings.minhash_threshold,
         num_perm=settings.minhash_num_perm,
@@ -154,13 +156,14 @@ def postprocess(settings: Settings) -> Path:
     # Also dedup on paragraphs (in case the same paragraph appears with different instructions)
     docs = _minhash_dedup(
         docs,
-        tokenizer_name=settings.minhash_tokenizer,
+        tokenizer=tokenizer,
         key="paragraph",
         threshold=settings.minhash_threshold,
         num_perm=settings.minhash_num_perm,
     )
 
-    # Shuffle
+    # Shuffle (seeded for reproducibility)
+    random.seed(42)
     random.shuffle(docs)
 
     print(f"Final dataset: {len(docs)} samples")

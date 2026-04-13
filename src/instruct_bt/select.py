@@ -11,8 +11,6 @@ Flow:
 from __future__ import annotations
 
 import asyncio
-import json
-import random
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -20,62 +18,8 @@ from openai import AsyncOpenAI
 from tqdm.asyncio import tqdm_asyncio
 
 from instruct_bt.config import Settings
-from instruct_bt.prompts import SELECT_TEMPLATE, SYSTEM_MSG
-
-
-# ---------------------------------------------------------------------------
-# Low-level API call (shared pattern)
-# ---------------------------------------------------------------------------
-
-
-async def _call_api(
-    client: AsyncOpenAI,
-    sem: asyncio.Semaphore,
-    user_msg: str,
-    settings: Settings,
-    system_msg: str = SYSTEM_MSG,
-    max_retries: int = 5,
-) -> str | None:
-    """Send a single chat completion request with retry + back-off."""
-    async with sem:
-        for attempt in range(max_retries):
-            try:
-                resp = await client.chat.completions.create(
-                    model=settings.model_name,
-                    temperature=settings.temperature,
-                    messages=[
-                        {"role": "system", "content": system_msg},
-                        {"role": "user", "content": user_msg},
-                    ],
-                )
-                return resp.choices[0].message.content
-            except Exception as exc:  # noqa: BLE001
-                wait = random.uniform(1, min(30, 2**attempt))
-                print(f"  [retry {attempt + 1}/{max_retries}] {exc!r} — waiting {wait:.1f}s")
-                await asyncio.sleep(wait)
-    return None
-
-
-# ---------------------------------------------------------------------------
-# JSONL helpers
-# ---------------------------------------------------------------------------
-
-
-def _read_jsonl(path: Path) -> list[dict]:
-    items = []
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                items.append(json.loads(line))
-    return items
-
-
-def _write_jsonl(path: Path, items: list[dict]) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        for item in items:
-            json.dump(item, f, ensure_ascii=False)
-            f.write("\n")
+from instruct_bt.prompts import SELECT_TEMPLATES, SELECT_SYSTEM_MSG
+from instruct_bt.utils import LLMCache, call_api, read_jsonl, write_jsonl
 
 
 # ---------------------------------------------------------------------------
@@ -104,15 +48,10 @@ def _is_verbatim(source: str, extracted: str, threshold: float = 0.90) -> bool:
     if norm_extracted in norm_source:
         return True
 
-    # Slow path: character-level similarity
-    ratio = SequenceMatcher(None, norm_source, norm_extracted).ratio()
-    # The ratio is over the full source, but we want to know if the extracted
-    # text is a near-exact match to *some part* of the source. So we also
-    # check the ratio against just the extracted text length.
     if len(norm_extracted) == 0:
         return False
 
-    # Find the best matching block and compute local similarity
+    # Find the best matching blocks and compute local similarity
     matcher = SequenceMatcher(None, norm_source, norm_extracted)
     # Get all matching blocks
     blocks = matcher.get_matching_blocks()
@@ -142,11 +81,11 @@ async def select_paragraphs(settings: Settings) -> Path:
     src = settings.data_dir / "paragraphs.jsonl"
     dst = settings.data_dir / "selected.jsonl"
 
-    docs = _read_jsonl(src)
+    docs = read_jsonl(src)
 
     # Resume support
     if dst.exists():
-        done = _read_jsonl(dst)
+        done = read_jsonl(dst)
         done_originals = {d["original_paragraph"] for d in done}
         remaining = [d for d in docs if d["paragraph"] not in done_originals]
         print(f"Resuming selection: {len(done)} done, {len(remaining)} remaining")
@@ -160,7 +99,10 @@ async def select_paragraphs(settings: Settings) -> Path:
 
     client = AsyncOpenAI(api_key=settings.api_key, base_url=settings.base_url)
     sem = asyncio.Semaphore(settings.max_concurrency)
+    cache = LLMCache(settings.data_dir / ".cache.db")
 
+    # Counters are safe to mutate from concurrent coroutines because
+    # asyncio.gather runs them on a single thread (no true parallelism).
     skipped_skip = 0
     skipped_verify = 0
     skipped_short = 0
@@ -169,8 +111,10 @@ async def select_paragraphs(settings: Settings) -> Path:
     async def _process(doc: dict) -> dict | None:
         nonlocal skipped_skip, skipped_verify, skipped_short, skipped_fail
 
-        prompt = SELECT_TEMPLATE.format(paragraph=doc["paragraph"])
-        result = await _call_api(client, sem, prompt, settings)
+        source_type = doc.get("source_type", "knowledge")
+        template = SELECT_TEMPLATES.get(source_type, SELECT_TEMPLATES["knowledge"])
+        prompt = template.format(paragraph=doc["paragraph"])
+        result = await call_api(client, sem, prompt, settings, SELECT_SYSTEM_MSG, cache=cache)
 
         if not result:
             skipped_fail += 1
@@ -183,8 +127,8 @@ async def select_paragraphs(settings: Settings) -> Path:
             skipped_skip += 1
             return None
 
-        # Too short to be useful
-        if len(result) < 50:
+        # Too short to be a satisfying chatbot response
+        if len(result) < 150:
             skipped_short += 1
             return None
 
@@ -199,6 +143,7 @@ async def select_paragraphs(settings: Settings) -> Path:
             "title": doc.get("title", ""),
             "url": doc.get("url", ""),
             "section_heading": doc.get("section_heading", ""),
+            "source_type": doc.get("source_type", "knowledge"),
         }
 
     tasks = [_process(d) for d in remaining]
@@ -207,7 +152,8 @@ async def select_paragraphs(settings: Settings) -> Path:
     new_docs = [r for r in results if r is not None]
     all_docs = done + new_docs
 
-    _write_jsonl(dst, all_docs)
+    write_jsonl(dst, all_docs)
+    cache.close()
 
     total_skipped = skipped_skip + skipped_verify + skipped_short + skipped_fail
     print(
